@@ -87,5 +87,7 @@ A really helpful resource for doing this project and creating smooth trajectorie
     git checkout e94b6e1
     ```
 
-## Editor Settings
+## Reflection
 
+In this project, I use FSM to determine what action I want to take. I just set up three states.
+"Keep Lane", "Lane Left Left", "Lane Changing Right", if my car and my car are very close, I use the switchLang () function to search for possible adjacent lanes. To determine whether the lane is available.
