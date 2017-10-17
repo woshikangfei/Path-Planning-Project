@@ -286,8 +286,8 @@ int main() {
 			car_x = end_path_s;
 		}
 		bool close = false;
-		double left = 999.0;
-		double right = 999.0;
+		double left = 1000.0;
+		double right = 1000.0;
 
 		double ref_x = car_x;
 		double ref_y = car_y;
@@ -328,11 +328,11 @@ int main() {
 
 		if(close)
 		{
-			mph -= 0.22;
+			mph -= 0.225;
 		}
 		else if(mph < 49.5)
 		{
-			mph += 0.220;
+			mph += 0.225;
 		}
 		
 		if(prev<2)
