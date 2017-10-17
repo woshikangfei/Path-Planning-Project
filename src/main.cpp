@@ -8,6 +8,8 @@
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
+#include "spline.h"
+
 
 using namespace std;
 
@@ -60,8 +62,8 @@ int ClosestWaypoint(double x, double y, const vector<double> &maps_x, const vect
 	return closestWaypoint;
 
 }
-
-int NextWaypoint(double x, double y, double theta, const vector<double> &maps_x, const vector<double> &maps_y)
+ 
+int NextWaypoint(double x, double y, double theta, vector<double> maps_x, vector<double> maps_y, vector<double> maps_dx, vector<double> maps_dy)
 {
 
 	int closestWaypoint = ClosestWaypoint(x,y,maps_x,maps_y);
@@ -69,12 +71,24 @@ int NextWaypoint(double x, double y, double theta, const vector<double> &maps_x,
 	double map_x = maps_x[closestWaypoint];
 	double map_y = maps_y[closestWaypoint];
 
-	double heading = atan2( (map_y-y),(map_x-x) );
+	 
 
-	double angle = abs(theta-heading);
-
-	if(angle > pi()/4)
-	{
+	double hx = map_x - x;
+	double hy = map_y - y;
+	
+	// normal vector
+	double nx = maps_dx[closestWaypoint];
+	double ny = maps_dy[closestWaypoint];
+	
+	// vector into the direction of the road (perpendicular to the nomal vector)
+	double vx = -ny;
+	double vy = nx;
+	
+	// if the inner product of v and h is positive then we are behind the waypoint so we do not need to
+	// increment closestWaypoint, otherwise we are beyond the waypoint and we need to increment closestWaypoint.
+	
+	double inner = hx * vx + hy * vy;
+	if (inner > 0.0){
 		closestWaypoint++;
 	}
 
@@ -83,9 +97,10 @@ int NextWaypoint(double x, double y, double theta, const vector<double> &maps_x,
 }
 
 // Transform from Cartesian x,y coordinates to Frenet s,d coordinates
-vector<double> getFrenet(double x, double y, double theta, const vector<double> &maps_x, const vector<double> &maps_y)
+vector<double> getFrenet(double x, double y, double theta, vector<double> maps_x, vector<double> maps_y, vector<double> maps_dx, vector<double> maps_dy)
 {
-	int next_wp = NextWaypoint(x,y, theta, maps_x,maps_y);
+	
+	int next_wp = NextWaypoint(x,y, theta, maps_x,maps_y, maps_dx,maps_dy);
 
 	int prev_wp;
 	prev_wp = next_wp-1;
@@ -131,8 +146,29 @@ vector<double> getFrenet(double x, double y, double theta, const vector<double> 
 
 }
 
+int switchLang(int l,int limit,double left_dist,double right_dist)
+{
+	if(l==0&&right_dist>=limit)
+	{
+		l=1;
+	}
+	else if(l==1&& (left_dist >= left_dist || right_dist >= limit))
+	{
+		if (left_dist > right_dist){
+			l = 0;
+		} else{
+			l = 2;
+		}
+	}
+	else if(l == 2 && left_dist >= limit)
+	{
+		l = 1;
+	}
+	return l;
+}
+
 // Transform from Frenet s,d coordinates to Cartesian x,y
-vector<double> getXY(double s, double d, const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y)
+vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> maps_x, vector<double> maps_y)
 {
 	int prev_wp = -1;
 
@@ -158,6 +194,9 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 	return {x,y};
 
 }
+
+
+
 
 int main() {
   uWS::Hub h;
@@ -196,7 +235,11 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  int l = 1; 
+  double mph = 0.0;
+  
+ 
+  h.onMessage([&mph,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,&l](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -232,18 +275,166 @@ int main() {
 
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
           	auto sensor_fusion = j[1]["sensor_fusion"];
+		
+		
+		int maxgap = 30;
+		int limit = 20;
+		int prev = previous_path_x.size();
+		if(prev>0)
+		{
+			car_x = end_path_s;
+		}
+		bool close = false;
+		double left = 999.0;
+		double right = 999.0;
 
-          	json msgJson;
-
-          	vector<double> next_x_vals;
+		double ref_x = car_x;
+		double ref_y = car_y;
+		double ref_yaw = deg2rad(car_yaw);
+		vector<double> sx;
+		vector<double> sy;
+		vector<double> next_x_vals;
           	vector<double> next_y_vals;
 
 
-          	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+		for(int i=0;i<sensor_fusion.size();i++)
+		{
+			double s_car_s = sensor_fusion[i][5];
+			float d = sensor_fusion[i][6];
+			float distanct_item = distance(s_car_s,d,car_s,car_d);
+			if(d < (2+4*l+2) && d > (2+4*l-2))
+			{
+				double vx = sensor_fusion[i][3];
+				double vy = sensor_fusion[i][4];
+				double speed=sqrt(vx*vx+vy*vy);
+ 				s_car_s += ((double)prev*.02*speed);
+				if((s_car_s > car_s) && ((s_car_s-car_s) < maxgap))
+				{
+					close=true;
+				}
+	
+			}
+			
+			if ((car_d - d) < -1.0 && distanct_item <  right)
+			{
+				right =distanct_item;
+			}
+			else if((car_d - d) > 1.0 && distanct_item < left)
+			{
+				left=distanct_item;
+			}
+		}
+
+		if(close)
+		{
+			mph -= 0.22;
+		}
+		else if(mph < 49.5)
+		{
+			mph += 0.220;
+		}
+		
+		if(prev<2)
+		{
+			sx.push_back(car_x - cos(car_yaw));
+			sx.push_back(car_x);
+				
+			sy.push_back(car_y - sin(car_yaw));
+			sy.push_back(car_y);
+		}
+		else
+		{
+			ref_x = previous_path_x[prev-1];
+			ref_y = previous_path_y[prev-1];
+
+			double ref_x_prev = previous_path_x[prev-2];
+			double ref_y_prev = previous_path_y[prev-2];
+			ref_yaw = atan2(ref_y-ref_y_prev, ref_x-ref_x_prev);
+
+
+			sx.push_back(ref_x_prev);
+			sx.push_back(ref_x);
+				
+			sy.push_back(ref_y_prev);
+			sy.push_back(ref_y);
+		}
+
+		// in frenet add evenly 30m spaced points ahead of the starting reference
+		vector<double> next_wp0 = getXY(car_s + maxgap, (2+4*l),map_waypoints_s, map_waypoints_x, map_waypoints_y);
+		vector<double> next_wp1 = getXY(car_s + 2 * maxgap, (2+4*l),map_waypoints_s, map_waypoints_x, map_waypoints_y);
+		vector<double> next_wp2 = getXY(car_s + 3 * maxgap, (2+4*l),map_waypoints_s, map_waypoints_x, map_waypoints_y);
+		
+		sx.push_back(next_wp0[0]);
+		sx.push_back(next_wp1[0]);
+		sx.push_back(next_wp2[0]);
+		
+		sy.push_back(next_wp0[1]);
+		sy.push_back(next_wp1[1]);
+		sy.push_back(next_wp2[1]);
+
+		for(int i = 0;i<sx.size();i++)
+		{
+			double shift_x = sx[i]-ref_x;
+			double shift_y = sy[i]-ref_y;
+			sx[i] = (shift_x*cos(0-ref_yaw)-shift_y*sin(0-ref_yaw));
+			sy[i] = (shift_x*sin(0-ref_yaw)+shift_y*cos(0-ref_yaw));
+		}
+
+		// create a spline
+		tk::spline s;
+
+		s.set_points(sx,sy);
+		json msgJson;
+
+          	for(int i=0;i<previous_path_x.size();i++)
+		{
+			next_x_vals.push_back(previous_path_x[i]);
+			next_y_vals.push_back(previous_path_y[i]);
+		}
+
+		
+		double target_x = 30.0;
+		double target_y = s(target_x);
+		double target_dist = sqrt((target_x)*(target_x)+(target_y)*(target_y));
+		double x_add_on = 0;
+		// fill up the rest of our path planner after filling it with previous points, here we will always output 50 points
+		for(int i=1;i<=50-previous_path_x.size();i++)
+		{
+			double N = (target_dist/(.02*mph/2.24));
+			double x_point = x_add_on+(target_x)/N;
+			double y_point = s(x_point);
+			
+			x_add_on = x_point;
+			
+			double x_ref = x_point;
+			double y_ref = y_point;
+			
+			// rotate back to normal after rotating it earlier
+			x_point = (x_ref*cos(ref_yaw)-y_ref*sin(ref_yaw));
+			y_point = (x_ref*sin(ref_yaw)+y_ref*cos(ref_yaw));
+			
+			x_point += ref_x;
+			y_point += ref_y;
+			
+			next_x_vals.push_back(x_point);
+			next_y_vals.push_back(y_point);
+		}
+		
+		if(close)
+		{
+			l = switchLang(l, limit, left, right);
+		}
+
+		
+	
+
+
+          	//define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
           	msgJson["next_x"] = next_x_vals;
           	msgJson["next_y"] = next_y_vals;
 
           	auto msg = "42[\"control\","+ msgJson.dump()+"]";
+		std::cout << msg.data() << std::endl;
 
           	//this_thread::sleep_for(chrono::milliseconds(1000));
           	ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
