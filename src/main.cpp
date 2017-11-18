@@ -283,7 +283,7 @@ int main() {
 		int prev = previous_path_x.size();
 		if(prev>0)
 		{
-			car_x = end_path_s;
+			car_s  = end_path_s;
 		}
 		bool close = false;
 		double left = 1000.0;
@@ -328,11 +328,11 @@ int main() {
 
 		if(close)
 		{
-			mph -= 0.225;
+			mph -= 0.224;
 		}
 		else if(mph < 49.5)
 		{
-			mph += 0.225;
+			mph += 0.224;
 		}
 		
 		if(prev<2)
